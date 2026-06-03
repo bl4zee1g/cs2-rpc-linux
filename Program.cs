@@ -12,7 +12,6 @@ const string APP_ID = "1352354388399882333";
 
 KillExistingInstances();
 
-// Connect to Discord/arrpc via IPC
 var ipc = new DiscordIpc(APP_ID);
 if (!ipc.Connect())
 {
@@ -79,7 +78,7 @@ var listenerThread = new Thread(() =>
         }
         catch (SocketException) { break; }
         catch (ObjectDisposedException) { break; }
-        catch (Exception ex) { Console.WriteLine($"[!] {ex.Message}"); }
+        catch { }
     }
 });
 listenerThread.IsBackground = true;
@@ -90,7 +89,6 @@ quitEvent.Wait();
 ipc.ClearPresence();
 ipc.Dispose();
 tcp.Stop();
-Console.WriteLine("\n[*] Goodbye.");
 
 void HandleGameState(GameState gs)
 {
@@ -105,22 +103,12 @@ void HandleGameState(GameState gs)
     if (!inMatch)
     {
         currentMap = null;
-        SetMenuPresence();
+        ipc.SetActivity("In Main Menu", "Waiting for a match", matchStart);
         return;
     }
 
     currentMap = gs.Map.Name;
-    SetMatchPresence(gs);
-}
 
-void SetMenuPresence()
-{
-    Console.WriteLine("[*] Menu presence");
-    ipc.SetActivity("In Main Menu", "Waiting for a match", matchStart);
-}
-
-void SetMatchPresence(GameState gs)
-{
     string map = gs.Map.Name;
     string mode = FormatGameMode(gs.Map.Mode);
     int ctScore = gs.Map.CTStatistics.Score;
@@ -132,7 +120,6 @@ void SetMatchPresence(GameState gs)
     string state = $"Score: CT {ctScore} - T {tScore} | Team: {team}";
     if (!alive) state += " (Dead)";
 
-    Console.WriteLine($"[*] Match presence: {details} | {state}");
     ipc.SetActivity(details, state, matchStart);
 }
 
@@ -162,7 +149,7 @@ static void KillExistingInstances()
     }
 }
 
-// Minimal Discord IPC client — speaks the same protocol as Vencord
+// Minimal Discord IPC client — same protocol as Vencord
 sealed class DiscordIpc : IDisposable
 {
     private readonly string _appId;
@@ -172,24 +159,12 @@ sealed class DiscordIpc : IDisposable
 
     public bool Connect()
     {
-        string[] paths =
-        [
-            $"discord-ipc-0",
-            $"discord-ipc-1",
-        ];
-
-        foreach (var name in paths)
+        string[] names = ["discord-ipc-0", "discord-ipc-1"];
+        foreach (var name in names)
         {
-            string path = Path.Combine(Path.GetTempPath(), name);  // /tmp/discord-ipc-0
-            if (TryConnect(path)) return true;
-
-            // Also try XDG runtime dir
+            if (TryConnect(Path.Combine(Path.GetTempPath(), name))) return true;
             string? xdg = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
-            if (xdg != null)
-            {
-                path = Path.Combine(xdg, name);
-                if (TryConnect(path)) return true;
-            }
+            if (xdg != null && TryConnect(Path.Combine(xdg, name))) return true;
         }
         return false;
     }
@@ -202,16 +177,15 @@ sealed class DiscordIpc : IDisposable
             sock.Connect(new UnixDomainSocketEndPoint(path));
             _socket = sock;
 
-            // Send HANDSHAKE
             Send(0, new JObject { ["v"] = 1, ["client_id"] = _appId });
-
-            // Read response
-            var (op, data) = Receive();
+            var (_, data) = Receive();
             var json = JObject.Parse(data);
-            Console.WriteLine($"[*] IPC handshake: cmd={json["cmd"]}, evt={json["evt"]}");
 
             if (json["evt"]?.ToString() == "READY")
+            {
+                Console.WriteLine($"[*] IPC: connected ({json["data"]?["user"]?["username"]})");
                 return true;
+            }
 
             _socket.Close();
             _socket = null;
@@ -223,8 +197,6 @@ sealed class DiscordIpc : IDisposable
     public void SetActivity(string details, string state, DateTime start)
     {
         if (_socket == null) return;
-
-        long startMs = new DateTimeOffset(start).ToUnixTimeMilliseconds();
 
         var payload = new JObject
         {
@@ -238,7 +210,7 @@ sealed class DiscordIpc : IDisposable
                     ["type"] = 0,
                     ["details"] = details,
                     ["state"] = state,
-                    ["timestamps"] = new JObject { ["start"] = startMs },
+                    ["timestamps"] = new JObject { ["start"] = new DateTimeOffset(start).ToUnixTimeMilliseconds() },
                     ["assets"] = new JObject
                     {
                         ["large_image"] = "cs2_logo",
@@ -249,41 +221,33 @@ sealed class DiscordIpc : IDisposable
         };
 
         Send(1, payload);
-        var (op, resp) = Receive();
-        Console.WriteLine($"[*] IPC response: {resp[..Math.Min(100, resp.Length)]}");
+        Receive();
     }
 
     public void ClearPresence()
     {
         if (_socket == null) return;
-
-        var payload = new JObject
+        Send(1, new JObject
         {
             ["cmd"] = "SET_ACTIVITY",
             ["nonce"] = Guid.NewGuid().ToString(),
-            ["args"] = new JObject
-            {
-                ["pid"] = Environment.ProcessId,
-                ["activity"] = null
-            }
-        };
-
-        Send(1, payload);
+            ["args"] = new JObject { ["pid"] = Environment.ProcessId, ["activity"] = null }
+        });
         Receive();
     }
 
     private void Send(int opcode, JObject json)
     {
         if (_socket == null) return;
-        byte[] jsonBytes = Encoding.UTF8.GetBytes(json.ToString(Newtonsoft.Json.Formatting.None));
+        byte[] body = Encoding.UTF8.GetBytes(json.ToString(Newtonsoft.Json.Formatting.None));
         byte[] header = new byte[8];
         BitConverter.TryWriteBytes(header.AsSpan(0, 4), opcode);
-        BitConverter.TryWriteBytes(header.AsSpan(4, 4), jsonBytes.Length);
+        BitConverter.TryWriteBytes(header.AsSpan(4, 4), body.Length);
         _socket.Send(header);
-        _socket.Send(jsonBytes);
+        _socket.Send(body);
     }
 
-    private (int op, string json) Receive()
+    private (int op, string data) Receive()
     {
         if (_socket == null) return (-1, "{}");
         byte[] header = new byte[8];
