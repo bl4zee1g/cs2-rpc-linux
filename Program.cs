@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -9,7 +8,6 @@ using Nodes = CounterStrike2GSI.Nodes;
 
 const string APP_ID = "1352354388399882333";
 
-KillExistingInstances();
 
 var ipc = new DiscordIpc(APP_ID);
 if (!ipc.Connect())
@@ -98,7 +96,7 @@ var listenerThread = new Thread(() =>
 listenerThread.IsBackground = true;
 listenerThread.Start();
 
-// Watchdog: clear presence if CS2 stops sending data for 30s
+// Watchdog: exit if CS2 stops sending data for 30s (systemd will restart us)
 var watchdog = new Thread(() =>
 {
     while (!quitEvent.IsSet)
@@ -106,10 +104,8 @@ var watchdog = new Thread(() =>
         Thread.Sleep(5000);
         if (presenceActive && (DateTime.UtcNow - lastDataReceived).TotalSeconds > 30)
         {
-            Console.WriteLine("[*] CS2 closed, clearing presence");
-            ipc.ClearPresence();
-            presenceActive = false;
-            inMatch = false;
+            Console.WriteLine("[*] CS2 closed, shutting down until next launch");
+            quitEvent.Set();
         }
     }
 });
@@ -167,18 +163,6 @@ static string FormatGameMode(Nodes.GameMode mode) => mode switch
     Nodes.GameMode.Skirmish => "Skirmish",
     _ => mode.ToString()
 };
-
-static void KillExistingInstances()
-{
-    int self = Environment.ProcessId;
-    foreach (var proc in Process.GetProcessesByName("cs2-rpc"))
-    {
-        if (proc.Id == self) continue;
-        try { proc.Kill(entireProcessTree: true); proc.WaitForExit(1000); }
-        catch { }
-        finally { proc.Dispose(); }
-    }
-}
 
 sealed class DiscordIpc : IDisposable
 {
