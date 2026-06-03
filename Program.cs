@@ -29,6 +29,8 @@ Console.WriteLine("[*] Press Ctrl+C to quit.");
 
 bool inMatch = false;
 DateTime matchStart = DateTime.UtcNow;
+DateTime lastDataReceived = DateTime.UtcNow;
+bool presenceActive = false;
 
 var quitEvent = new ManualResetEventSlim();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; quitEvent.Set(); };
@@ -79,6 +81,7 @@ var listenerThread = new Thread(() =>
                 }
                 var json = Encoding.UTF8.GetString(body, 0, totalRead);
                 var gameState = new GameState(JObject.Parse(json));
+                lastDataReceived = DateTime.UtcNow;
                 HandleGameState(gameState);
             }
 
@@ -94,6 +97,24 @@ var listenerThread = new Thread(() =>
 });
 listenerThread.IsBackground = true;
 listenerThread.Start();
+
+// Watchdog: clear presence if CS2 stops sending data for 30s
+var watchdog = new Thread(() =>
+{
+    while (!quitEvent.IsSet)
+    {
+        Thread.Sleep(5000);
+        if (presenceActive && (DateTime.UtcNow - lastDataReceived).TotalSeconds > 30)
+        {
+            Console.WriteLine("[*] CS2 closed, clearing presence");
+            ipc.ClearPresence();
+            presenceActive = false;
+            inMatch = false;
+        }
+    }
+});
+watchdog.IsBackground = true;
+watchdog.Start();
 
 quitEvent.Wait();
 
@@ -114,6 +135,7 @@ void HandleGameState(GameState gs)
     if (!inMatch)
     {
         ipc.SetActivity("In Main Menu", "Waiting for a match", matchStart);
+        presenceActive = true;
         return;
     }
 
@@ -129,6 +151,7 @@ void HandleGameState(GameState gs)
     if (!alive) state += " (Dead)";
 
     ipc.SetActivity(details, state, matchStart);
+    presenceActive = true;
 }
 
 static string FormatGameMode(Nodes.GameMode mode) => mode switch
