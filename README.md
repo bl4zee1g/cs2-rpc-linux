@@ -13,4 +13,4 @@ setsid [Location of binary] > /dev/null 2>&1 & %command%
 - Done! Now when you launch the game it should just work.
 
 ## Credits
-@antonpup for writing [CounterStrike2GSI](https://github.com/antonpup/CounterStrike2GSI)
+[@antonpup](https://github.com/antonpup) for writing [CounterStrike2GSI](https://github.com/antonpup/CounterStrike2GSI)
