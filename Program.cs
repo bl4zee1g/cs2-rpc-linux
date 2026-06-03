@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CounterStrike2GSI;
 using Nodes = CounterStrike2GSI.Nodes;
 using DiscordRPC;
@@ -5,9 +6,11 @@ using DiscordRPC;
 const int PORT = 3000;
 const string APP_ID = "1352354388399882333";
 
+// Kill any leftover cs2-rpc from a previous CS2 session
+KillExistingInstances();
+
 var gsl = new GameStateListener(PORT);
 var rpc = new DiscordRpcClient(APP_ID);
-
 
 rpc.OnReady += (_, e) => Console.WriteLine($"[*] Connected to Discord as {e.User.Username}");
 rpc.OnConnectionFailed += (_, _) => Console.WriteLine("[!] Could not connect to Discord. Is it running?");
@@ -34,12 +37,15 @@ Console.WriteLine($"[*] Listening on http://localhost:{PORT}/");
 Console.WriteLine("[*] Start CS2 and your presence will update automatically.");
 Console.WriteLine("[*] Press Ctrl+C to quit.");
 
+// Handle both Ctrl+C (SIGINT) and process termination (SIGTERM)
 var quitEvent = new ManualResetEventSlim();
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
     quitEvent.Set();
 };
+AppDomain.CurrentDomain.ProcessExit += (_, _) => quitEvent.Set();
+
 quitEvent.Wait();
 
 rpc.ClearPresence();
@@ -124,3 +130,15 @@ static string FormatGameMode(Nodes.GameMode mode) => mode switch
     Nodes.GameMode.Skirmish => "Skirmish",
     _ => mode.ToString()
 };
+
+static void KillExistingInstances()
+{
+    int self = Environment.ProcessId;
+    foreach (var proc in Process.GetProcessesByName("cs2-rpc"))
+    {
+        if (proc.Id == self) continue;
+        try { proc.Kill(entireProcessTree: true); proc.WaitForExit(1000); }
+        catch { /* already dead or we lack perms */ }
+        finally { proc.Dispose(); }
+    }
+}
