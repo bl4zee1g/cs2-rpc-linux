@@ -7,7 +7,6 @@ using CounterStrike2GSI;
 using Newtonsoft.Json.Linq;
 using Nodes = CounterStrike2GSI.Nodes;
 
-const int PORT = 3000;
 const string APP_ID = "1352354388399882333";
 
 KillExistingInstances();
@@ -20,16 +19,16 @@ if (!ipc.Connect())
 }
 Console.WriteLine("[*] Connected to Discord");
 
-var tcp = new TcpListener(IPAddress.Any, PORT);
-
-bool inMatch = false;
-string? currentMap = null;
-DateTime matchStart = DateTime.UtcNow;
-
+var tcp = new TcpListener(IPAddress.Loopback, 3000);
+tcp.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 tcp.Start();
-Console.WriteLine($"[*] Listening on 0.0.0.0:{PORT}");
+
+Console.WriteLine("[*] Listening on 127.0.0.1:3000");
 Console.WriteLine("[*] Start CS2 and your presence will update automatically.");
 Console.WriteLine("[*] Press Ctrl+C to quit.");
+
+bool inMatch = false;
+DateTime matchStart = DateTime.UtcNow;
 
 var quitEvent = new ManualResetEventSlim();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; quitEvent.Set(); };
@@ -43,42 +42,54 @@ var listenerThread = new Thread(() =>
         {
             var client = tcp.AcceptTcpClient();
             var stream = client.GetStream();
-            var reader = new StreamReader(stream, Encoding.UTF8);
+            stream.ReadTimeout = 5000;
 
-            string? requestLine = reader.ReadLine();
-            if (requestLine == null) { client.Close(); continue; }
-
-            int contentLength = 0;
-            string? line;
-            while (!string.IsNullOrEmpty(line = reader.ReadLine()))
+            // Read raw bytes until we find the end of headers
+            var headerBuf = new List<byte>();
+            int prev3 = 0, prev2 = 0, prev1 = 0;
+            while (true)
             {
-                var m = Regex.Match(line, @"^Content-Length:\s*(\d+)", RegexOptions.IgnoreCase);
-                if (m.Success)
-                    contentLength = int.Parse(m.Groups[1].Value);
+                int b = stream.ReadByte();
+                if (b == -1) { client.Close(); break; }
+                headerBuf.Add((byte)b);
+                if (prev2 == '\r' && prev1 == '\n' && b == '\r') { /* possible end */ }
+                if (prev1 == '\r' && b == '\n' && headerBuf.Count >= 4)
+                {
+                    // Check if last 4 bytes are \r\n\r\n
+                    var hb = headerBuf;
+                    if (hb[^4] == '\r' && hb[^3] == '\n' && hb[^2] == '\r' && hb[^1] == '\n')
+                        break;
+                }
+                prev1 = b;
             }
+
+            var headers = Encoding.UTF8.GetString(headerBuf.ToArray());
+            var clMatch = Regex.Match(headers, @"Content-Length:\s*(\d+)", RegexOptions.IgnoreCase);
+            int contentLength = clMatch.Success ? int.Parse(clMatch.Groups[1].Value) : 0;
 
             if (contentLength > 0)
             {
-                var buffer = new char[contentLength];
+                var body = new byte[contentLength];
                 int totalRead = 0;
                 while (totalRead < contentLength)
                 {
-                    int read = reader.Read(buffer, totalRead, contentLength - totalRead);
+                    int read = stream.Read(body, totalRead, contentLength - totalRead);
                     if (read == 0) break;
                     totalRead += read;
                 }
-                var json = new string(buffer, 0, totalRead);
+                var json = Encoding.UTF8.GetString(body, 0, totalRead);
                 var gameState = new GameState(JObject.Parse(json));
                 HandleGameState(gameState);
             }
 
             var resp = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
             stream.Write(resp, 0, resp.Length);
-            reader.Close(); stream.Close(); client.Close();
+            stream.Close(); client.Close();
         }
         catch (SocketException) { break; }
         catch (ObjectDisposedException) { break; }
-        catch { }
+        catch (IOException) { }
+        catch (Exception ex) { Console.WriteLine($"[!] {ex.GetType().Name}: {ex.Message}"); }
     }
 });
 listenerThread.IsBackground = true;
@@ -102,12 +113,9 @@ void HandleGameState(GameState gs)
 
     if (!inMatch)
     {
-        currentMap = null;
         ipc.SetActivity("In Main Menu", "Waiting for a match", matchStart);
         return;
     }
-
-    currentMap = gs.Map.Name;
 
     string map = gs.Map.Name;
     string mode = FormatGameMode(gs.Map.Mode);
@@ -149,7 +157,6 @@ static void KillExistingInstances()
     }
 }
 
-// Minimal Discord IPC client — same protocol as Vencord
 sealed class DiscordIpc : IDisposable
 {
     private readonly string _appId;
