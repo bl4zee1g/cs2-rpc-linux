@@ -1,6 +1,6 @@
 # CS2 Discord RPC for Linux
 
-Not sophisticated at all, just some vibecoded script that adds a Discord Rich Presence that displays current map, team and score of your game.
+Not sophisticated at all, just some vibecoded script that adds a Discord Rich Presence that displays current map, team and score of your game. If you have any suggestions for features feel free to open an issue or better yet make a PR
 
 ## Setup
 
