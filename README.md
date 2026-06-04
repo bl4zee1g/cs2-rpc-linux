@@ -4,8 +4,8 @@ Not sophisticated at all, just some vibecoded script that adds a Discord Rich Pr
 
 ## Setup
 
-- [Download gamestate_integration_cs2rpc.cfg](https://raw.githubusercontent.com/bl4zee1g/cs2-rpc-linux/main/gamestate_integration_cs2rpc.cfg) and move it into your cfg folder (no need to add it to autostart)
-- [Download the latest binary](https://github.com/bl4zee1g/cs2-rpc-linux/releases/download/latest/cs2-rpc) from Github Releases and put it wherever you want
+- [Download gamestate_integration_cs2rpc.cfg](https://github.com/bl4zee1g/cs2-rpc-linux/blob/main/gamestate_integration_cs2rpc.cfg) and move it into your cfg folder (no need to add it to autostart)
+- [Download the latest binary](https://github.com/bl4zee1g/cs2-rpc-linux/releases/latest) from Github Releases and put it wherever you want
 - Add CS2 launch options:
 ```
 setsid [Location of binary] > /dev/null 2>&1 & %command%
