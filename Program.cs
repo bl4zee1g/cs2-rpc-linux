@@ -122,8 +122,7 @@ void HandleGameState(GameState gs)
 {
     bool wasInMatch = inMatch;
 
-    inMatch = gs.Player.Activity == Nodes.PlayerActivity.Playing
-              && !string.IsNullOrEmpty(gs.Map.Name);
+    inMatch = !string.IsNullOrEmpty(gs.Map.Name);
 
     if (inMatch && !wasInMatch)
         matchStart = DateTime.UtcNow;
