@@ -9,9 +9,9 @@ Not sophisticated at all, just some vibecoded script that adds a Discord Rich Pr
 ```
 chmod +x cs2-rpc
 ```
-- Add CS2 launch options:
+- Make some sort of autostart daemon for it. If you're on Hyprland, you can just add this to your hyprland.conf:
 ```
-setsid [Location of binary] > /dev/null 2>&1 & %command%
+exec-once = [path to cs2-rpc]
 ```
 - Done! Now when you launch the game it should just work.
 

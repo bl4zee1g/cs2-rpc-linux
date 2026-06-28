@@ -96,7 +96,7 @@ var listenerThread = new Thread(() =>
 listenerThread.IsBackground = true;
 listenerThread.Start();
 
-// Watchdog: exit if CS2 stops sending data for 30s (systemd will restart us)
+// Watchdog: clear presence if CS2 stops sending data for 30s, keep running for next launch
 var watchdog = new Thread(() =>
 {
     while (!quitEvent.IsSet)
@@ -104,8 +104,10 @@ var watchdog = new Thread(() =>
         Thread.Sleep(5000);
         if (presenceActive && (DateTime.UtcNow - lastDataReceived).TotalSeconds > 30)
         {
-            Console.WriteLine("[*] CS2 closed, shutting down until next launch");
-            quitEvent.Set();
+            Console.WriteLine("[*] CS2 closed, clearing presence — waiting for next launch");
+            ipc.ClearPresence();
+            presenceActive = false;
+            inMatch = false;
         }
     }
 });
@@ -120,6 +122,8 @@ tcp.Stop();
 
 void HandleGameState(GameState gs)
 {
+    if (!presenceActive)
+        Console.WriteLine("[*] CS2 detected — updating presence");
     bool wasInMatch = inMatch;
 
     inMatch = !string.IsNullOrEmpty(gs.Map.Name);
