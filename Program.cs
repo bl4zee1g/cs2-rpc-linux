@@ -10,10 +10,10 @@ const string APP_ID = "1352354388399882333";
 
 
 var ipc = new DiscordIpc(APP_ID);
-if (!ipc.Connect())
+while (!ipc.Connect())
 {
-    Console.WriteLine("[!] Could not connect to Discord IPC. Is Discord/Vesktop running?");
-    return;
+    Console.WriteLine("[!] Discord not running, retrying in 5s...");
+    Thread.Sleep(5000);
 }
 Console.WriteLine("[*] Connected to Discord");
 
@@ -105,7 +105,8 @@ var watchdog = new Thread(() =>
         if (presenceActive && (DateTime.UtcNow - lastDataReceived).TotalSeconds > 30)
         {
             Console.WriteLine("[*] CS2 closed, clearing presence — waiting for next launch");
-            ipc.ClearPresence();
+            try { ipc.ClearPresence(); }
+            catch (Exception ex) { Console.WriteLine($"[!] ClearPresence failed: {ex.Message}"); }
             presenceActive = false;
             inMatch = false;
         }
@@ -213,8 +214,6 @@ sealed class DiscordIpc : IDisposable
 
     public void SetActivity(string details, string state, DateTime start)
     {
-        if (_socket == null) return;
-
         var payload = new JObject
         {
             ["cmd"] = "SET_ACTIVITY",
@@ -237,20 +236,43 @@ sealed class DiscordIpc : IDisposable
             }
         };
 
-        Send(1, payload);
-        Receive();
+        TrySend(1, payload);
     }
 
     public void ClearPresence()
     {
-        if (_socket == null) return;
-        Send(1, new JObject
+        TrySend(1, new JObject
         {
             ["cmd"] = "SET_ACTIVITY",
             ["nonce"] = Guid.NewGuid().ToString(),
             ["args"] = new JObject { ["pid"] = Environment.ProcessId, ["activity"] = null }
         });
-        Receive();
+    }
+
+    private void TrySend(int opcode, JObject json)
+    {
+        try
+        {
+            if (_socket == null) { Reconnect(); if (_socket == null) return; }
+            Send(opcode, json);
+            Receive();
+        }
+        catch
+        {
+            Reconnect();
+            if (_socket == null) return;
+            Send(opcode, json);
+            Receive();
+        }
+    }
+
+    private void Reconnect()
+    {
+        _socket?.Dispose();
+        _socket = null;
+        Console.WriteLine("[*] IPC disconnected, reconnecting...");
+        if (!Connect())
+            Console.WriteLine("[!] Could not reconnect to Discord");
     }
 
     private void Send(int opcode, JObject json)
