@@ -9,10 +9,13 @@ Not sophisticated at all, just some vibecoded script that adds a Discord Rich Pr
 ```
 chmod +x cs2-rpc
 ```
-- Make some sort of autostart daemon for it. If you're on Hyprland, you can just add this to your hyprland.conf:
+- Make some sort of autostart daemon for it. For me on Hyprland, I just add it to the autostart bit of my hyprland.lua:
+```lua
+hl.on("hyprland.start", function () 
+  hl.exec_cmd([path to cs2-rpc binary])
+end)
 ```
-exec-once = [path to cs2-rpc]
-```
+If you're not on Hyprland but use systemd I recommend writing a systemd unit for starting cs2-rpc.
 - Done! Now when you launch the game it should just work.
 
 ## Credits
