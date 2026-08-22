@@ -38,59 +38,17 @@ var listenerThread = new Thread(() =>
 {
     while (true)
     {
+        TcpClient client;
         try
         {
-            var client = tcp.AcceptTcpClient();
-            var stream = client.GetStream();
-            stream.ReadTimeout = 5000;
-
-            // Read raw bytes until we find the end of headers
-            var headerBuf = new List<byte>();
-            int prev3 = 0, prev2 = 0, prev1 = 0;
-            while (true)
-            {
-                int b = stream.ReadByte();
-                if (b == -1) { client.Close(); break; }
-                headerBuf.Add((byte)b);
-                if (prev2 == '\r' && prev1 == '\n' && b == '\r') { /* possible end */ }
-                if (prev1 == '\r' && b == '\n' && headerBuf.Count >= 4)
-                {
-                    // Check if last 4 bytes are \r\n\r\n
-                    var hb = headerBuf;
-                    if (hb[^4] == '\r' && hb[^3] == '\n' && hb[^2] == '\r' && hb[^1] == '\n')
-                        break;
-                }
-                prev1 = b;
-            }
-
-            var headers = Encoding.UTF8.GetString(headerBuf.ToArray());
-            var clMatch = Regex.Match(headers, @"Content-Length:\s*(\d+)", RegexOptions.IgnoreCase);
-            int contentLength = clMatch.Success ? int.Parse(clMatch.Groups[1].Value) : 0;
-
-            if (contentLength > 0)
-            {
-                var body = new byte[contentLength];
-                int totalRead = 0;
-                while (totalRead < contentLength)
-                {
-                    int read = stream.Read(body, totalRead, contentLength - totalRead);
-                    if (read == 0) break;
-                    totalRead += read;
-                }
-                var json = Encoding.UTF8.GetString(body, 0, totalRead);
-                var gameState = new GameState(JObject.Parse(json));
-                lastDataReceived = DateTime.UtcNow;
-                HandleGameState(gameState);
-            }
-
-            var resp = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-            stream.Write(resp, 0, resp.Length);
-            stream.Close(); client.Close();
+            client = tcp.AcceptTcpClient();
         }
         catch (SocketException) { break; }
         catch (ObjectDisposedException) { break; }
-        catch (IOException) { }
-        catch (Exception ex) { Console.WriteLine($"[!] {ex.GetType().Name}: {ex.Message}"); }
+
+        // Serve each client on the thread pool so a slow/hung client
+        // can never block accepting new connections (e.g. from CS2).
+        Task.Run(() => HandleClient(client));
     }
 });
 listenerThread.IsBackground = true;
@@ -120,6 +78,67 @@ quitEvent.Wait();
 ipc.ClearPresence();
 ipc.Dispose();
 tcp.Stop();
+
+void HandleClient(TcpClient client)
+{
+    try
+    {
+        using (client)
+        {
+            var stream = client.GetStream();
+            stream.ReadTimeout = 5000;
+
+            // Read raw bytes until we find the end of headers (\r\n\r\n)
+            var headerBuf = new List<byte>();
+            while (true)
+            {
+                int b = stream.ReadByte();
+                if (b == -1) return;
+                headerBuf.Add((byte)b);
+                if (headerBuf.Count >= 4 &&
+                    headerBuf[^4] == '\r' && headerBuf[^3] == '\n' &&
+                    headerBuf[^2] == '\r' && headerBuf[^1] == '\n')
+                    break;
+            }
+
+            var headers = Encoding.UTF8.GetString(headerBuf.ToArray());
+            var clMatch = Regex.Match(headers, @"Content-Length:\s*(\d+)", RegexOptions.IgnoreCase);
+            int contentLength = clMatch.Success ? int.Parse(clMatch.Groups[1].Value) : 0;
+
+            if (contentLength > 0)
+            {
+                var body = new byte[contentLength];
+                int totalRead = 0;
+                while (totalRead < contentLength)
+                {
+                    int read = stream.Read(body, totalRead, contentLength - totalRead);
+                    if (read == 0) break;
+                    totalRead += read;
+                }
+
+                var json = Encoding.UTF8.GetString(body, 0, totalRead);
+                try
+                {
+                    var gameState = new GameState(JObject.Parse(json));
+                    lastDataReceived = DateTime.UtcNow;
+                    HandleGameState(gameState);
+                }
+                catch (Exception ex)
+                {
+                    // Bad payload — still answer 200 so the sender doesn't hang on us.
+                    Console.WriteLine($"[!] Bad game state payload: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            var resp = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream.Write(resp, 0, resp.Length);
+        }
+    }
+    catch (SocketException) { }
+    catch (ObjectDisposedException) { }
+    catch (IOException) { }
+    catch (Exception ex) { Console.WriteLine($"[!] {ex.GetType().Name}: {ex.Message}"); }
+}
 
 void HandleGameState(GameState gs)
 {
@@ -171,6 +190,7 @@ static string FormatGameMode(Nodes.GameMode mode) => mode switch
 sealed class DiscordIpc : IDisposable
 {
     private readonly string _appId;
+    private readonly object _sendLock = new();
     private Socket? _socket;
 
     public DiscordIpc(string appId) => _appId = appId;
@@ -193,6 +213,8 @@ sealed class DiscordIpc : IDisposable
         {
             var sock = new Socket(AddressFamily.Unix, SocketType.Stream, (ProtocolType)0);
             sock.Connect(new UnixDomainSocketEndPoint(path));
+            sock.ReceiveTimeout = 5000;
+            sock.SendTimeout = 5000;
             _socket = sock;
 
             Send(0, new JObject { ["v"] = 1, ["client_id"] = _appId });
@@ -251,18 +273,24 @@ sealed class DiscordIpc : IDisposable
 
     private void TrySend(int opcode, JObject json)
     {
-        try
+        // Serialize the send+receive pair: SetActivity/ClearPresence can be
+        // invoked from multiple client threads, and interleaving frames on
+        // the socket would corrupt the IPC stream.
+        lock (_sendLock)
         {
-            if (_socket == null) { Reconnect(); if (_socket == null) return; }
-            Send(opcode, json);
-            Receive();
-        }
-        catch
-        {
-            Reconnect();
-            if (_socket == null) return;
-            Send(opcode, json);
-            Receive();
+            try
+            {
+                if (_socket == null) { Reconnect(); if (_socket == null) return; }
+                Send(opcode, json);
+                Receive();
+            }
+            catch
+            {
+                Reconnect();
+                if (_socket == null) return;
+                Send(opcode, json);
+                Receive();
+            }
         }
     }
 
